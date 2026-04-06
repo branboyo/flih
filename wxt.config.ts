@@ -7,6 +7,8 @@ export default defineConfig({
     plugins: [tailwindcss()],
   }),
   manifest: {
+    name: 'ChromeWave',
+    description: 'Record tab audio with waveform editing and DAW export',
     permissions: ['tabCapture', 'storage', 'downloads', 'unlimitedStorage'],
     action: {},
   },

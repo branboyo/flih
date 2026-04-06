@@ -1,6 +1,6 @@
 {
-  "name": "wxt-react-starter",
-  "description": "manifest.json description",
+  "name": "chromewave",
+  "description": "Chrome extension that records tab audio with waveform editing and DAW export",
   "private": true,
   "version": "0.0.0",
   "type": "module",
