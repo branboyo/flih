@@ -683,8 +683,8 @@ export default function WaveformEditor({
 
   // ── Render ───────────────────────────────────────────────────────────────────
   const duration = audioBuffer?.duration ?? 1;
-  const startPct = (displayStart / duration) * 100; // still used for zoom bubble anchor
-  const endPct = (displayEnd / duration) * 100;     // still used for zoom bubble anchor
+  const startPct = (displayStart / duration) * 100; // % fallback when containerW not yet measured
+  const endPct = (displayEnd / duration) * 100;     // % fallback when containerW not yet measured
 
   // ── Label collision detection ────────────────────────────────────────────────
   const containerW = containerRef.current?.clientWidth ?? 0;
