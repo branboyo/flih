@@ -1,31 +1,777 @@
-import { useRef } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
+import WaveSurfer from 'wavesurfer.js';
+import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js';
 
 interface WaveformEditorProps {
   audioBuffer: AudioBuffer | null;
+  /** Changes only when the underlying source recording changes (not on FX updates). */
+  sourceKey: string;
   trimStart: number;
   trimEnd: number;
+  isPlaying: boolean;
+  zoomMode: 'bubble' | 'inline';
   onTrimChange: (start: number, end: number) => void;
+  onPlayingChange: (playing: boolean) => void;
 }
 
-export default function WaveformEditor({
-  audioBuffer: _audioBuffer,
-  trimStart,
-  trimEnd,
-  onTrimChange: _onTrimChange,
-}: WaveformEditorProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
+// ── Zoom state ────────────────────────────────────────────────────────────────
+
+interface ZoomState {
+  trigger: 'canvas' | 'start' | 'end';
+  centerSec: number;
+  anchorPct: number; // 0–1: bubble's left position (clamped to keep it on-screen)
+}
+
+// ── Mini-waveform renderer ────────────────────────────────────────────────────
+// Draws the ±windowSec slice of `buffer` centred on `centerSec`.
+// A cyan centre line marks the handle / cursor position exactly.
+
+function drawMiniWave(
+  canvas: HTMLCanvasElement,
+  buffer: AudioBuffer,
+  centerSec: number,
+  windowSec = 0.5,
+) {
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.offsetWidth;
+  const cssH = canvas.offsetHeight || 50;
+  if (cssW === 0) return;
+
+  canvas.width = cssW * dpr;
+  canvas.height = cssH * dpr;
+  const W = canvas.width;
+  const H = canvas.height;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, W, H);
+
+  const sr = buffer.sampleRate;
+  const ch0 = buffer.getChannelData(0);
+  const ch1 = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : null;
+
+  const startSample = Math.max(0, Math.round((centerSec - windowSec / 2) * sr));
+  const endSample = Math.min(buffer.length, Math.round((centerSec + windowSec / 2) * sr));
+  const totalSamples = endSample - startSample;
+  if (totalSamples <= 0) return;
+
+  // Normalise to the local peak so quiet sections are still readable
+  let peak = 0;
+  for (let s = startSample; s < endSample; s++) {
+    const a = ch1
+      ? Math.max(Math.abs(ch0[s] ?? 0), Math.abs(ch1[s] ?? 0))
+      : Math.abs(ch0[s] ?? 0);
+    if (a > peak) peak = a;
+  }
+  const norm = peak > 0.001 ? 1 / peak : 1;
+
+  const barW = 2 * dpr;
+  const gap = 1 * dpr;
+  const numBars = Math.floor(W / (barW + gap));
+
+  for (let i = 0; i < numBars; i++) {
+    const sStart = startSample + Math.floor((i / numBars) * totalSamples);
+    const sEnd = startSample + Math.floor(((i + 1) / numBars) * totalSamples);
+    let maxAmp = 0;
+    for (let s = sStart; s < sEnd; s++) {
+      const a = ch1
+        ? Math.max(Math.abs(ch0[s] ?? 0), Math.abs(ch1[s] ?? 0))
+        : Math.abs(ch0[s] ?? 0);
+      if (a > maxAmp) maxAmp = a;
+    }
+    const barH = Math.max(2 * dpr, maxAmp * norm * H * 0.85);
+    const x = i * (barW + gap);
+    const y = (H - barH) / 2;
+    ctx.fillStyle = 'rgba(110,113,145,0.6)';
+    ctx.beginPath();
+    ctx.roundRect(x, y, barW, barH, dpr);
+    ctx.fill();
+  }
+
+  // Centre marker — exact handle / cursor position
+  ctx.fillStyle = 'rgba(103,232,249,0.9)';
+  ctx.fillRect(W / 2 - dpr, 0, dpr * 2, H);
+}
+
+// ── Time format (ms precision) ────────────────────────────────────────────────
+
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = (seconds % 60).toFixed(3);
+  return `${m}:${s.padStart(6, '0')}`;
+}
+
+// ── Editable trim-time label ──────────────────────────────────────────────────
+
+interface EditableTrimTimeProps {
+  value: number;
+  min: number;
+  max: number;
+  style: React.CSSProperties;
+  /** 'start' = left edge anchored at position (label extends right).
+   *  'end'   = right edge anchored at position (label extends left). */
+  anchor: 'start' | 'end';
+  onCommit: (v: number) => void;
+}
+
+function EditableTrimTime({ value, min, max, style, anchor, onCommit }: EditableTrimTimeProps) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const startEdit = () => { setDraft(value.toFixed(3)); setEditing(true); };
+
+  const commit = () => {
+    const parsed = parseFloat(draft);
+    if (!isNaN(parsed)) onCommit(Math.max(min, Math.min(max, parsed)));
+    setEditing(false);
+  };
+
+  // anchor='start' → left edge at handle, text extends rightward (no X shift)
+  // anchor='end'   → right edge at handle, text extends leftward (-100% shift)
+  const transform = anchor === 'end' ? 'translateX(-100%)' : undefined;
 
   return (
-    <div data-testid="waveform-editor" className="px-4">
-      <div ref={containerRef} className="h-20 rounded-md bg-gray-900" />
-      <div className="mt-1 flex justify-between">
-        <span className="font-mono text-[10px] text-yellow-400">
-          {trimStart.toFixed(1)}s
+    <div className="absolute" style={{ ...style, transform }}>
+      {editing ? (
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit();
+            if (e.key === 'Escape') setEditing(false);
+          }}
+          className="w-[72px] rounded border border-cw-action-bold/60 bg-cw-elevated px-1 text-center font-mono text-[10px] text-cw-timestamp outline-none"
+        />
+      ) : (
+        <span
+          className="cursor-text font-mono text-[10px] text-cw-timestamp hover:text-cw-action"
+          title="Click to enter exact time (seconds)"
+          onClick={startEdit}
+        >
+          {formatTime(value)}
         </span>
-        <span className="font-mono text-[10px] text-yellow-400">
-          {trimEnd.toFixed(1)}s
-        </span>
+      )}
+    </div>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+
+export default function WaveformEditor({
+  audioBuffer,
+  sourceKey,
+  trimStart,
+  trimEnd,
+  isPlaying,
+  zoomMode,
+  onTrimChange,
+  onPlayingChange,
+}: WaveformEditorProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const wavesurferRef = useRef<WaveSurfer | null>(null);
+  const regionsRef = useRef<RegionsPlugin | null>(null);
+  const regionRef = useRef<ReturnType<RegionsPlugin['addRegion']> | null>(null);
+  const scrubCtxRef = useRef<AudioContext | null>(null);
+  const scrubSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const lastScrubTimeRef = useRef(0);
+  const prevSourceKeyRef = useRef<string | null>(null);
+  const prevStartRef = useRef(trimStart);
+  const prevEndRef = useRef(trimEnd);
+  // Holds the unsubscribe fn returned by ws.on('ready', ...) during soft reloads,
+  // so we can cancel a pending listener before adding a new one.
+  const readyUnsubRef = useRef<(() => void) | null>(null);
+
+  // Keep latest callbacks in refs so async event handlers never go stale
+  const onTrimChangeRef = useRef(onTrimChange);
+  const onPlayingChangeRef = useRef(onPlayingChange);
+  useEffect(() => { onTrimChangeRef.current = onTrimChange; }, [onTrimChange]);
+  useEffect(() => { onPlayingChangeRef.current = onPlayingChange; }, [onPlayingChange]);
+
+  // Latest audioBuffer in a ref for pointer-event handlers
+  const audioBufferRef = useRef(audioBuffer);
+  useEffect(() => { audioBufferRef.current = audioBuffer; }, [audioBuffer]);
+
+  const [ready, setReady] = useState(false);
+  const [displayStart, setDisplayStart] = useState(trimStart);
+  const [displayEnd, setDisplayEnd] = useState(trimEnd);
+
+  useEffect(() => {
+    setDisplayStart(trimStart);
+    setDisplayEnd(trimEnd);
+  }, [trimStart, trimEnd]);
+
+  // ── Zoom state ──────────────────────────────────────────────────────────────
+
+  const [zoomState, setZoomState] = useState<ZoomState | null>(null);
+  const zoomCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdTriggerRef = useRef<'canvas' | 'start' | 'end' | null>(null);
+  const holdOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const zoomActiveRef = useRef(false);
+
+  // Callback ref: draw as soon as the canvas mounts
+  const zoomCanvasCallbackRef = useCallback(
+    (canvas: HTMLCanvasElement | null) => {
+      zoomCanvasRef.current = canvas;
+      if (canvas && zoomState && audioBufferRef.current) {
+        requestAnimationFrame(() => {
+          if (zoomCanvasRef.current && zoomState && audioBufferRef.current) {
+            drawMiniWave(zoomCanvasRef.current, audioBufferRef.current, zoomState.centerSec);
+          }
+        });
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [zoomState?.trigger, zoomState?.centerSec],
+  );
+
+  // Redraw whenever centre moves (handle drag / canvas follow)
+  useEffect(() => {
+    if (!zoomState || !audioBufferRef.current || !zoomCanvasRef.current) return;
+    drawMiniWave(zoomCanvasRef.current, audioBufferRef.current, zoomState.centerSec);
+  }, [zoomState?.centerSec]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Container pointer events ────────────────────────────────────────────────
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const HOLD_MS = 500;
+    const HANDLE_HIT_PX = 16;
+    const CANVAS_CANCEL_PX = 8;
+
+    const cancelHold = () => {
+      if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
+    };
+
+    const closeZoom = () => {
+      cancelHold();
+      if (zoomActiveRef.current) {
+        zoomActiveRef.current = false;
+        holdTriggerRef.current = null;
+        holdOriginRef.current = null;
+        setZoomState(null);
+      }
+    };
+
+    const onPointerDown = (e: PointerEvent) => {
+      const ws = wavesurferRef.current;
+      const region = regionRef.current;
+      if (!ws || !region) return;
+
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const w = rect.width;
+      const dur = ws.getDuration();
+      if (dur <= 0 || w <= 0) return;
+
+      const startPx = (region.start / dur) * w;
+      const endPx = (region.end / dur) * w;
+
+      let trigger: 'canvas' | 'start' | 'end';
+      let centerSec: number;
+
+      if (Math.abs(x - startPx) <= HANDLE_HIT_PX) {
+        trigger = 'start'; centerSec = region.start;
+      } else if (Math.abs(x - endPx) <= HANDLE_HIT_PX) {
+        trigger = 'end'; centerSec = region.end;
+      } else {
+        trigger = 'canvas'; centerSec = Math.max(0, Math.min(dur, (x / w) * dur));
+      }
+
+      holdTriggerRef.current = trigger;
+      holdOriginRef.current = { x, y };
+      cancelHold();
+
+      const anchorPct = Math.max(0.1, Math.min(0.9, x / w));
+      holdTimerRef.current = setTimeout(() => {
+        holdTimerRef.current = null;
+        zoomActiveRef.current = true;
+        setZoomState({ trigger, centerSec, anchorPct });
+      }, HOLD_MS);
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (!zoomActiveRef.current) {
+        // Cancel canvas hold if pointer moved too far before timer fires
+        if (holdTimerRef.current && holdTriggerRef.current === 'canvas' && holdOriginRef.current) {
+          const rect = container.getBoundingClientRect();
+          const dx = (e.clientX - rect.left) - holdOriginRef.current.x;
+          const dy = (e.clientY - rect.top) - holdOriginRef.current.y;
+          if (Math.sqrt(dx * dx + dy * dy) > CANVAS_CANCEL_PX) cancelHold();
+        }
+        return;
+      }
+
+      // Canvas hold: zoom view follows the pointer
+      if (holdTriggerRef.current === 'canvas') {
+        const ws = wavesurferRef.current;
+        if (!ws) return;
+        const rect = container.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const w = rect.width;
+        const dur = ws.getDuration();
+        if (dur <= 0 || w <= 0) return;
+        const sec = Math.max(0, Math.min(dur, (x / w) * dur));
+        const anchorPct = Math.max(0.1, Math.min(0.9, x / w));
+        setZoomState((prev) => prev ? { ...prev, centerSec: sec, anchorPct } : null);
+      }
+      // Handle triggers: centerSec updated via region 'update' event below
+    };
+
+    const onPointerUp = () => closeZoom();
+    const onPointerLeave = () => closeZoom();
+
+    container.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    container.addEventListener('pointerleave', onPointerLeave);
+
+    return () => {
+      container.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      container.removeEventListener('pointerleave', onPointerLeave);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+
+  const bufferToWav = useCallback((buffer: AudioBuffer): Blob => {
+    const numChannels = buffer.numberOfChannels;
+    const sampleRate = buffer.sampleRate;
+    const length = buffer.length;
+    const bytesPerSample = 2;
+    const blockAlign = numChannels * bytesPerSample;
+    const dataSize = length * blockAlign;
+    const headerSize = 44;
+    const arrayBuf = new ArrayBuffer(headerSize + dataSize);
+    const view = new DataView(arrayBuf);
+    const writeStr = (off: number, str: string) => {
+      for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i));
+    };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, headerSize + dataSize - 8, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, dataSize, true);
+    const channels: Float32Array[] = [];
+    for (let ch = 0; ch < numChannels; ch++) channels.push(buffer.getChannelData(ch));
+    let offset = headerSize;
+    for (let i = 0; i < length; i++) {
+      for (let ch = 0; ch < numChannels; ch++) {
+        const s = Math.max(-1, Math.min(1, channels[ch][i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+        offset += bytesPerSample;
+      }
+    }
+    return new Blob([arrayBuf], { type: 'audio/wav' });
+  }, []);
+
+  const stopScrub = useCallback(() => {
+    if (scrubSourceRef.current) {
+      try { scrubSourceRef.current.stop(); } catch { /* already stopped */ }
+      scrubSourceRef.current = null;
+    }
+  }, []);
+
+  const wireRegionEvents = useCallback((
+    region: ReturnType<RegionsPlugin['addRegion']>,
+    buffer: AudioBuffer,
+  ) => {
+    prevStartRef.current = region.start;
+    prevEndRef.current = region.end;
+
+    region.on('update', () => {
+      setDisplayStart(region.start);
+      setDisplayEnd(region.end);
+
+      const startMoved = Math.abs(region.start - prevStartRef.current) > 0.001;
+      const endMoved = Math.abs(region.end - prevEndRef.current) > 0.001;
+      if (!startMoved && !endMoved) return;
+
+      const scrubTime = endMoved ? region.end : region.start;
+      prevStartRef.current = region.start;
+      prevEndRef.current = region.end;
+
+      // Update zoom centre when a handle is being dragged
+      if (zoomActiveRef.current && holdTriggerRef.current !== 'canvas') {
+        const newCenter = holdTriggerRef.current === 'start' ? region.start : region.end;
+        const anchorPct = Math.max(0.1, Math.min(0.9, newCenter / buffer.duration));
+        setZoomState((prev) => prev ? { ...prev, centerSec: newCenter, anchorPct } : null);
+      }
+
+      const now = performance.now();
+      if (now - lastScrubTimeRef.current < 80) return;
+      lastScrubTimeRef.current = now;
+
+      stopScrub();
+      if (!scrubCtxRef.current || scrubCtxRef.current.state === 'closed') {
+        scrubCtxRef.current = new AudioContext();
+      }
+      const ctx = scrubCtxRef.current;
+      const snippetLen = 0.08;
+      const offset = Math.max(0, Math.min(scrubTime, buffer.duration - snippetLen));
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.5, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + snippetLen);
+      source.connect(gain);
+      gain.connect(ctx.destination);
+      source.start(0, offset, snippetLen);
+      scrubSourceRef.current = source;
+    });
+
+    region.on('update-end', () => {
+      stopScrub();
+      setDisplayStart(region.start);
+      setDisplayEnd(region.end);
+      onTrimChangeRef.current(region.start, region.end);
+
+      // Close zoom when the handle is released
+      if (zoomActiveRef.current && holdTriggerRef.current !== 'canvas') {
+        zoomActiveRef.current = false;
+        holdTriggerRef.current = null;
+        holdOriginRef.current = null;
+        setZoomState(null);
+      }
+    });
+  }, [stopScrub]);
+
+  const addRegion = useCallback((
+    start: number,
+    end: number,
+    regions: RegionsPlugin,
+    ws: WaveSurfer,
+    buffer: AudioBuffer,
+  ) => {
+    const clampedEnd = Math.min(end, ws.getDuration());
+    const region = regions.addRegion({
+      start,
+      end: clampedEnd,
+      color: 'rgba(103, 232, 249, 0.08)',
+      drag: false,
+      resize: true,
+    });
+    regionRef.current = region;
+    setDisplayStart(start);
+    setDisplayEnd(clampedEnd);
+    wireRegionEvents(region, buffer);
+
+    // ── Style trim handles ──────────────────────────────────────────────────────
+    for (const side of ['left', 'right'] as const) {
+      if (!region.element) continue;
+      const h = region.element.querySelector(
+        `[data-resize="${side}"]`,
+      ) as HTMLElement | null;
+      if (!h) continue;
+
+      // Thin track line
+      h.style.width = '2px';
+      h.style.background = 'rgba(103, 232, 249, 0.65)';
+
+      // Pill grip
+      const pill = document.createElement('div');
+      Object.assign(pill.style, {
+        position: 'absolute',
+        top: '50%',
+        left: '50%',
+        transform: 'translate(-50%, -50%)',
+        width: '13px',
+        height: '26px',
+        borderRadius: '6px',
+        background: 'rgba(103, 232, 249, 0.92)',
+        boxShadow: '0 0 10px rgba(103,232,249,0.5)',
+        transition: 'background 0.15s, box-shadow 0.15s',
+        cursor: 'default',   // suppresses inherited ew-resize
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '4px',
+      });
+
+      // Three horizontal grip dashes
+      for (let i = 0; i < 3; i++) {
+        const dash = document.createElement('div');
+        Object.assign(dash.style, {
+          width: '5px',
+          height: '1.5px',
+          background: 'rgba(15, 17, 30, 0.5)',
+          borderRadius: '1px',
+          pointerEvents: 'none',
+          flexShrink: '0',
+        });
+        pill.appendChild(dash);
+      }
+
+      // Hover glow
+      pill.addEventListener('pointerenter', () => {
+        pill.style.background = 'rgba(103, 232, 249, 1)';
+        pill.style.boxShadow =
+          '0 0 16px rgba(103,232,249,0.75), 0 0 4px rgba(103,232,249,1)';
+      });
+      pill.addEventListener('pointerleave', () => {
+        pill.style.background = 'rgba(103, 232, 249, 0.92)';
+        pill.style.boxShadow = '0 0 10px rgba(103,232,249,0.5)';
+      });
+
+      h.appendChild(pill);
+    }
+
+    return region;
+  }, [wireRegionEvents]);
+
+  // ── Main effect ─────────────────────────────────────────────────────────────
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!containerRef.current || !audioBuffer) return;
+
+    const isNewSource = sourceKey !== prevSourceKeyRef.current;
+    const needsFullInit = isNewSource || !wavesurferRef.current;
+
+    if (needsFullInit) {
+      // Cancel any soft-reload ready listener that might still be pending
+      readyUnsubRef.current?.();
+      readyUnsubRef.current = null;
+
+      if (wavesurferRef.current) {
+        wavesurferRef.current.destroy();
+        wavesurferRef.current = null;
+        regionsRef.current = null;
+        regionRef.current = null;
+      }
+      stopScrub();
+      setReady(false);
+      prevSourceKeyRef.current = sourceKey;
+
+      const regions = RegionsPlugin.create();
+      regionsRef.current = regions;
+
+      const ws = WaveSurfer.create({
+        container: containerRef.current,
+        waveColor: 'rgba(110, 113, 145, 0.3)',
+        progressColor: '#6366f1',
+        cursorColor: '#ffffff',
+        cursorWidth: 2,
+        barWidth: 3,
+        barGap: 1,
+        barRadius: 1,
+        height: 80,
+        normalize: true,
+        // interact: true (default) so play(0, end) isn't blocked when trimStart=0.
+        // User click-to-seek is intercepted and clamped below via 'interaction'.
+        plugins: [regions],
+      });
+      wavesurferRef.current = ws;
+
+      // Guard so this fires exactly once even though ws.on() is persistent.
+      // Without this, every subsequent ws.loadBlob() (FX soft reloads) re-fires
+      // the full-init listener, adding an extra region and resetting positions.
+      let initFired = false;
+      ws.on('ready', () => {
+        if (initFired) return;
+        initFired = true;
+        setReady(true);
+        addRegion(trimStart, trimEnd, regions, ws, audioBuffer);
+      });
+
+      // Clamp any user click-to-seek to within the trim region.
+      // A programmaticSeek flag breaks the feedback loop caused by
+      // ws.setTime() itself emitting 'interaction'.
+      let programmaticSeek = false;
+      ws.on('interaction', (newTime: number) => {
+        if (programmaticSeek) return;
+        const region = regionRef.current;
+        if (!region) return;
+        if (newTime < region.start || newTime > region.end) {
+          programmaticSeek = true;
+          ws.setTime(region.start);
+          programmaticSeek = false;
+        }
+      });
+
+      // 'finish' fires when the audio element reaches its natural end.
+      // 'pause' fires when region.play() hits region.end (WaveSurfer internally
+      // calls media.pause() at the boundary; this does NOT emit 'finish').
+      // Both must call onPlayingChange(false) so React state stays in sync.
+      const onStop = () => onPlayingChangeRef.current(false);
+      ws.on('finish', onStop);
+      ws.on('pause', onStop);
+
+      ws.loadBlob(bufferToWav(audioBuffer));
+
+    } else {
+      const ws = wavesurferRef.current!;
+      const regions = regionsRef.current!;
+
+      const savedStart = regionRef.current?.start ?? trimStart;
+      const savedEnd = regionRef.current?.end ?? trimEnd;
+
+      if (ws.isPlaying()) {
+        ws.pause();
+        onPlayingChangeRef.current(false);
+      }
+
+      // Cancel any previous pending ready listener before adding a new one —
+      // otherwise each FX change stacks an extra listener and addRegion fires
+      // once per accumulated listener, producing extra trim handles.
+      readyUnsubRef.current?.();
+      readyUnsubRef.current = null;
+
+      // Clear ALL regions (clearRegions covers orphans the ref may have missed)
+      regions.clearRegions();
+      regionRef.current = null;
+      setReady(false);
+
+      const unsub = ws.on('ready', () => {
+        // Self-unsubscribe: removes this listener from WaveSurfer so it fires
+        // exactly once. Nulling the ref alone wasn't enough — the old listener
+        // stayed registered and fired again on the next loadBlob call.
+        readyUnsubRef.current?.();
+        readyUnsubRef.current = null;
+        const clampedEnd = Math.min(savedEnd, ws.getDuration());
+        addRegion(savedStart, clampedEnd, regions, ws, audioBuffer);
+        setReady(true);
+        if (clampedEnd !== savedEnd) onTrimChangeRef.current(savedStart, clampedEnd);
+      });
+      readyUnsubRef.current = unsub as unknown as () => void;
+
+      ws.loadBlob(bufferToWav(audioBuffer));
+    }
+  }, [audioBuffer, sourceKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Unmount cleanup ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      wavesurferRef.current?.destroy();
+      wavesurferRef.current = null;
+      stopScrub();
+      scrubCtxRef.current?.close();
+      scrubCtxRef.current = null;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Sync play/pause ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    const ws = wavesurferRef.current;
+    const region = regionRef.current;
+    if (!ws || !ready) return;
+
+    if (isPlaying && !ws.isPlaying()) {
+      if (region) region.play();
+      else ws.play();
+    } else if (!isPlaying && ws.isPlaying()) {
+      ws.pause();
+      if (ws.getDuration() > 0 && region) ws.seekTo(region.start / ws.getDuration());
+    }
+  }, [isPlaying, ready]);
+
+  // ── Render ───────────────────────────────────────────────────────────────────
+  const duration = audioBuffer?.duration ?? 1;
+  const startPct = (displayStart / duration) * 100;
+  const endPct = (displayEnd / duration) * 100;
+
+  const zoomLabel = zoomState?.trigger === 'start'
+    ? 'trim start'
+    : zoomState?.trigger === 'end'
+      ? 'trim end'
+      : null;
+
+  return (
+    <div data-testid="waveform-editor" className="px-4 pt-2 pb-1">
+      {/* Waveform + bubble anchor */}
+      <div className="relative">
+        {/* Option A: Floating bubble */}
+        {zoomMode === 'bubble' && zoomState && (
+          <div
+            className="pointer-events-none absolute z-30 w-52 -translate-x-1/2 rounded-xl border border-cw-action-bold bg-cw-elevated p-2 shadow-xl shadow-black/40"
+            style={{ bottom: 'calc(100% + 14px)', left: `${zoomState.anchorPct * 100}%` }}
+          >
+            {/* Caret */}
+            <div className="absolute top-full left-1/2 -translate-x-1/2 border-[7px] border-transparent border-t-cw-action-bold" />
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-[9px] uppercase tracking-wider text-cw-action">Magnified</span>
+              {zoomLabel && (
+                <span className="font-mono text-[9px] text-cw-text-secondary">{zoomLabel}</span>
+              )}
+              <span className="font-mono text-[9px] text-cw-text-secondary">8×</span>
+            </div>
+            <canvas
+              ref={zoomCanvasCallbackRef}
+              height={50}
+              className="block w-full rounded bg-[#0d0f1e]"
+            />
+            <div className="mt-1 text-center font-mono text-[9px] text-cw-timestamp">
+              {formatTime(zoomState.centerSec)}
+            </div>
+          </div>
+        )}
+
+        <div
+          ref={containerRef}
+          className="overflow-hidden rounded-lg bg-cw-surface"
+          style={{ minHeight: '80px' }}
+        />
       </div>
+
+      {/* Trim time labels */}
+      {ready && (
+        <div className="relative mt-1 h-5">
+          <EditableTrimTime
+            value={displayStart}
+            min={0}
+            max={displayEnd - 0.001}
+            anchor="start"
+            style={{ left: `${startPct}%` }}
+            onCommit={(v) => {
+              onTrimChangeRef.current(v, displayEnd);
+              regionRef.current?.setOptions({ start: v });
+            }}
+          />
+          <EditableTrimTime
+            value={displayEnd}
+            min={displayStart + 0.001}
+            max={duration}
+            anchor="end"
+            style={{ left: `${endPct}%` }}
+            onCommit={(v) => {
+              onTrimChangeRef.current(displayStart, v);
+              regionRef.current?.setOptions({ end: v });
+            }}
+          />
+        </div>
+      )}
+
+      {/* Option B: Inline zoom panel */}
+      {zoomMode === 'inline' && zoomState && (
+        <div className="mt-2 overflow-hidden rounded-lg border border-cw-action-bold bg-[#0d0f1e]">
+          <div className="flex items-center justify-between border-b border-cw-action-bold/20 bg-cw-action-bold/[0.07] px-2 py-1">
+            <span className="text-[9px] uppercase tracking-wider text-cw-action">Magnified · 8×</span>
+            {zoomLabel && (
+              <span className="text-[9px] text-cw-text-secondary">{zoomLabel}</span>
+            )}
+            <span className="font-mono text-[9px] text-cw-timestamp">
+              {formatTime(zoomState.centerSec)}
+            </span>
+          </div>
+          <canvas
+            ref={zoomCanvasCallbackRef}
+            height={56}
+            className="block w-full"
+          />
+        </div>
+      )}
     </div>
   );
 }
