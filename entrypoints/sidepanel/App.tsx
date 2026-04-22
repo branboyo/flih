@@ -14,11 +14,13 @@ import PlaybackControls from '@/components/PlaybackControls';
 import FileNameEditor from '@/components/FileNameEditor';
 import SaveControls from '@/components/SaveControls';
 import RecordingLibrary from '@/components/RecordingLibrary';
+import PitchShiftControls from '@/components/PitchShiftControls';
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>('idle');
   const [fileName, setFileName] = useState('untitled');
   const [format, setFormat] = useState<AudioFormat>('wav');
+  const [openPanelId, setOpenPanelId] = useState<string | null>(null);
 
   const recorder = useRecorder();
   const editor = useAudioEditor();
@@ -121,7 +123,19 @@ export default function App() {
             effects={effects}
             onApply={editor.applyEffect}
             disabled={editor.state.isProcessing}
+            openPanelId={openPanelId}
+            onPanelToggle={(id) =>
+              setOpenPanelId((current) => (current === id ? null : id))
+            }
           />
+          {openPanelId === 'pitch' && (
+            <PitchShiftControls
+              disabled={editor.state.isProcessing}
+              onApply={(semitones, cents, preserveFormants) =>
+                editor.applyPitchShiftEffect(semitones, cents, preserveFormants)
+              }
+            />
+          )}
           <SaveControls
             format={format}
             onFormatChange={setFormat}
