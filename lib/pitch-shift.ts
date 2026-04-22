@@ -48,7 +48,7 @@ export async function applyPitchShift(
   // Extract all channel data upfront
   const channelData: Float32Array[] = [];
   for (let ch = 0; ch < numberOfChannels; ch++) {
-    channelData.push(buffer.getChannelData(ch));
+    channelData.push(buffer.getChannelData(ch).slice());
   }
 
   // Offline mode requires a study pass before processing
@@ -72,6 +72,10 @@ export async function applyPitchShift(
   }
 
   stretcher.delete(); // free WASM memory
+
+  if (totalSamples === 0) {
+    return buffer;
+  }
 
   // Merge chunks and build output AudioBuffer at actual output length
   const outBuffer = new AudioBuffer({ numberOfChannels, length: totalSamples, sampleRate });
