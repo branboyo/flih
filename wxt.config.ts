@@ -11,5 +11,8 @@ export default defineConfig({
     description: 'Record tab audio with waveform editing and DAW export',
     permissions: ['tabCapture', 'storage', 'downloads', 'unlimitedStorage'],
     action: {},
+    content_security_policy: {
+      extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
+    },
   },
 });
