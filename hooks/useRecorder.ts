@@ -121,7 +121,7 @@ export function useRecorder() {
       blobPromiseRef.current = null;
     }
 
-    if (audioCtxRef.current) {
+    if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
       await audioCtxRef.current.close();
       audioCtxRef.current = null;
     }
