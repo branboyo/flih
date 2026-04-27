@@ -139,15 +139,17 @@
   animation-delay: calc(min(var(--i, 0), 5) * 35ms);
 }
 
-/* ── Recording dot pulse ──────────────────────────────────────────────────── */
+/* ── Icon bars — recording pulse ──────────────────────────────────────────── */
+/* Applied to the <g> inside SamplerIcon when appState === 'recording'.
+   The parent SVG has overflow="hidden" so the glow can't bleed out.         */
 
-@keyframes cw-pulse-rec {
-  0%, 100% { opacity: 1;    box-shadow: 0 0 0 0   rgba(192, 132, 252, 0.7); }
-  60%       { opacity: 0.75; box-shadow: 0 0 0 5px rgba(192, 132, 252, 0);   }
+@keyframes cw-bars-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
 }
 
-.pulse-recording {
-  animation: cw-pulse-rec 1.5s ease-in-out infinite;
+.cw-bars-recording {
+  animation: cw-bars-pulse 1.5s ease-in-out infinite;
 }
 
 /* ── Sonar rings — expand outward from RecordButton while recording ───────── */

@@ -1,7 +1,7 @@
 import type { Browser } from 'wxt/browser';
 import type { ExtensionMessage } from '@/types';
 
-export const PORT_NAME = 'flih-port';
+export const PORT_NAME = 'sampler-port';
 
 export function connectToBackground(): Browser.runtime.Port {
   return browser.runtime.connect({ name: PORT_NAME });

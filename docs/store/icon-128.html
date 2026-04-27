@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+</style>
+</head>
+<body>
+<svg width="100%" height="100%" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0d0f1e"/>
+      <stop offset="100%" stop-color="#0a0c14"/>
+    </linearGradient>
+    <linearGradient id="waveGrad" x1="0" y1="0" x2="128" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#818cf8" stop-opacity="0.6"/>
+      <stop offset="40%"  stop-color="#a855f7"/>
+      <stop offset="60%"  stop-color="#c084fc"/>
+      <stop offset="100%" stop-color="#6366f1" stop-opacity="0.6"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="softglow">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="round">
+      <rect width="128" height="128" rx="28" ry="28"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+
+  <!-- Subtle radial glow center -->
+  <radialGradient id="centerGlow" cx="64" cy="64" r="50" gradientUnits="userSpaceOnUse">
+    <stop offset="0%" stop-color="#6366f1" stop-opacity="0.12"/>
+    <stop offset="100%" stop-color="#0a0c14" stop-opacity="0"/>
+  </radialGradient>
+  <rect width="128" height="128" rx="28" fill="url(#centerGlow)"/>
+
+  <!-- Waveform bars — 5 bars, centered at x=64 y=64, width=14 gap=10 -->
+  <!-- Total span: 5*14 + 4*10 = 110px, start x=9, margin=9px each side -->
+  <g clip-path="url(#round)" filter="url(#glow)">
+    <rect x="9"   y="40" width="14" height="48"  rx="7" fill="url(#waveGrad)" opacity="0.65"/>
+    <rect x="33"  y="26" width="14" height="76"  rx="7" fill="url(#waveGrad)" opacity="0.82"/>
+    <rect x="57"  y="10" width="14" height="108" rx="7" fill="url(#waveGrad)"/>
+    <rect x="81"  y="26" width="14" height="76"  rx="7" fill="url(#waveGrad)" opacity="0.82"/>
+    <rect x="105" y="40" width="14" height="48"  rx="7" fill="url(#waveGrad)" opacity="0.65"/>
+  </g>
+
+  <!-- Outer ring highlight -->
+  <rect width="128" height="128" rx="28" fill="none" stroke="rgba(255,255,255,0.07)" stroke-width="1"/>
+</svg>
+</body>
+</html>

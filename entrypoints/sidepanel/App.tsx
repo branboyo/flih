@@ -19,6 +19,48 @@ import FileNameEditor from '@/components/FileNameEditor';
 import SaveControls from '@/components/SaveControls';
 import RecordingLibrary from '@/components/RecordingLibrary';
 
+const SamplerIcon = ({ isRecording }: { isRecording: boolean }) => (
+  /* overflow="hidden" clips the SVG filter glow to the 16×16 viewport */
+  <svg
+    width="16" height="16" viewBox="0 0 16 16"
+    xmlns="http://www.w3.org/2000/svg"
+    style={{ display: 'block', overflow: 'hidden', flexShrink: 0 }}
+  >
+    <defs>
+      {/* Normal: indigo→purple gradient */}
+      <linearGradient id="si-grad-idle" x1="0" y1="0" x2="16" y2="0" gradientUnits="userSpaceOnUse">
+        <stop offset="0%"   stopColor="#818cf8" stopOpacity="0.6"/>
+        <stop offset="40%"  stopColor="#a855f7"/>
+        <stop offset="60%"  stopColor="#c084fc"/>
+        <stop offset="100%" stopColor="#6366f1" stopOpacity="0.6"/>
+      </linearGradient>
+      {/* Recording: pink→fuchsia gradient */}
+      <linearGradient id="si-grad-rec" x1="0" y1="0" x2="16" y2="0" gradientUnits="userSpaceOnUse">
+        <stop offset="0%"   stopColor="#f472b6" stopOpacity="0.6"/>
+        <stop offset="40%"  stopColor="#e879f9"/>
+        <stop offset="60%"  stopColor="#f0abfc"/>
+        <stop offset="100%" stopColor="#f472b6" stopOpacity="0.6"/>
+      </linearGradient>
+      {/* Tight glow — stdDeviation 0.6 spreads ~2px, well within SVG clip */}
+      <filter id="si-glow" x="-20%" y="-20%" width="140%" height="140%">
+        <feGaussianBlur stdDeviation="0.6" result="blur"/>
+        <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+    </defs>
+    {/* 5 bars, width=2 gap=1.2, centered in 16×16 */}
+    <g
+      filter="url(#si-glow)"
+      className={isRecording ? 'cw-bars-recording' : ''}
+    >
+      <rect x="0.6"  y="6"   width="2" height="4"  rx="1" fill={`url(#si-grad-${isRecording ? 'rec' : 'idle'})`} opacity="0.65"/>
+      <rect x="3.8"  y="4.5" width="2" height="7"  rx="1" fill={`url(#si-grad-${isRecording ? 'rec' : 'idle'})`} opacity="0.82"/>
+      <rect x="7"    y="2"   width="2" height="12" rx="1" fill={`url(#si-grad-${isRecording ? 'rec' : 'idle'})`}/>
+      <rect x="10.2" y="4.5" width="2" height="7"  rx="1" fill={`url(#si-grad-${isRecording ? 'rec' : 'idle'})`} opacity="0.82"/>
+      <rect x="13.4" y="6"   width="2" height="4"  rx="1" fill={`url(#si-grad-${isRecording ? 'rec' : 'idle'})`} opacity="0.65"/>
+    </g>
+  </svg>
+);
+
 const GearIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="12" cy="12" r="3" />
@@ -157,12 +199,8 @@ export default function App() {
       {/* Header */}
       <div className="flex items-center justify-between border-b border-cw-border px-4 py-3">
         <div className="flex items-center gap-2">
-          <div
-            className={`h-2 w-2 rounded-full ${
-              appState === 'recording' ? 'bg-cw-recording pulse-recording' : 'bg-cw-success-bold'
-            }`}
-          />
-          <span className="text-sm font-semibold text-cw-text-primary">Flih</span>
+          <SamplerIcon isRecording={appState === 'recording'} />
+          <span className="text-sm font-semibold text-cw-text-primary">Sampler</span>
         </div>
         <div className="flex items-center gap-2">
           {appState === 'editing' && (

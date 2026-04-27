@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pitch-draft",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "-p", "5199", "--no-clipboard", "/Users/brandonhsu/Documents/Projects/chromewave"],
+      "port": 5199
+    }
+  ]
+}

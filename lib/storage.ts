@@ -1,13 +1,13 @@
 import type { RecordingMeta, Settings } from '@/types';
 
 export const DEFAULT_SETTINGS: Settings = {
-  folderName: 'Flih',
+  folderName: 'Sampler',
   preferredFormat: 'wav',
   sampleRate: 44100,
   waveformZoomMode: 'bubble',
 };
 
-const DB_NAME = 'flih-db';
+const DB_NAME = 'sampler-db';
 const STORE_NAME = 'audio-blobs';
 const DB_VERSION = 1;
 
